@@ -20,4 +20,3 @@ logs/
 .DS_Store
 Thumbs.db
 validate_pipeline.py
-data
