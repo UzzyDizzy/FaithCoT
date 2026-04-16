@@ -73,11 +73,11 @@ class ModelManager:
             cache_dir=self.cache_dir,
             token=self.hf_token,
         )
-
-        # Ensure pad token is set
+        # FIX PAD TOKEN (REMOVE HF WARNING)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
         # Load model
         model_kwargs = {

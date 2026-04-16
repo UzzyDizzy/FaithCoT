@@ -47,12 +47,12 @@ class AnswerExtractor:
 
         # Priority 0: Final Answer (ADD THIS BLOCK)
         final_match = re.search(
-            r"(Final Answer|Answer)\s*[:=]\s*([^\n]+)",
+            r"Final Answer\s*[:=]\s*(-?\d+\.?\d*)",
             text,
             re.IGNORECASE,
         )
         if final_match:
-            return self._normalize_numeric(final_match.group(2))
+            return self._normalize_numeric(final_match.group(1))
 
         # Priority 1: \boxed{...}
         boxed = re.findall(r"\\boxed\{([^}]+)\}", text)
@@ -193,7 +193,7 @@ class AnswerExtractor:
 
         value = value.strip()
 
-        # 🔥 REMOVE LATEX / MARKDOWN / SYMBOLS
+        # REMOVE LATEX / MARKDOWN / SYMBOLS
         value = re.sub(r"\\\[|\\\]|\\\(|\\\)", "", value)   # remove \[ \]
         value = re.sub(r"[*_`$]", "", value)               # remove markdown
         value = re.sub(r"[^\d\.\-]", " ", value)           # keep only numbers

@@ -60,19 +60,29 @@ class StepInformationGain:
             return self._empty_result()
 
         steps = parsed_cot.steps
+
+        if not steps or len(steps) == 0:
+            return self._empty_result()
+
         entropies = []
         sig_values = []
 
         # Compute entropy with just the prompt (no reasoning)
         context = prompt
         result = inference_engine.get_answer_log_probs(context)
+        if result is None or "entropy" not in result:
+            return self._empty_result()
+
         h_initial = result["entropy"]
         entropies.append(h_initial)
 
         # Compute entropy after each step
         for i, step in enumerate(steps):
-            context = prompt + "\n".join(s.text for s in steps[: i + 1])
+            context = prompt + "\n" + "\n".join(s.text for s in steps[: i + 1])
             result = inference_engine.get_answer_log_probs(context)
+            if result is None or "entropy" not in result:
+                return self._empty_result()
+
             h_after = result["entropy"]
             entropies.append(h_after)
 

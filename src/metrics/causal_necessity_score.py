@@ -75,7 +75,10 @@ class CausalNecessityScore:
 
             # Create modified prompt with the remaining reasoning
             modified_prompt = (
-                prompt + modified_cot + "\n\nFinal Answer:"
+                prompt +
+                "\n\n" +
+                modified_cot +
+                "\n\nAnswer:"
             )
 
             # Generate answer with modified CoT

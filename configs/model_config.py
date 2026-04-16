@@ -105,7 +105,7 @@ MODEL = MODEL_1  # Default: smallest model for testing
 # ============================================================
 
 GENERATION_CONFIG = {
-    "max_new_tokens": 512,       # Max reasoning tokens
+    "max_new_tokens": 256,       # Max reasoning tokens
     "temperature": 0.0,          # Deterministic greedy decoding
     "top_p": 1.0,                # No nucleus sampling
     "top_k": 1,                  # Greedy

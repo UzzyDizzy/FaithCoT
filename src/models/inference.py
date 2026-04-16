@@ -307,9 +307,15 @@ class InferenceEngine:
 
         if self.use_amp:
             with torch.cuda.amp.autocast(dtype=torch.float16):
-                outputs = self.model.generate(**inputs, **config)
+                outputs = self.model.generate(
+                    **inputs,
+                    **config,
+                )
         else:
-            outputs = self.model.generate(**inputs, **config)
+            outputs = self.model.generate(
+                **inputs,
+                **config,
+            )
 
         # Decode each sequence
         generated_ids = outputs[:, inputs["input_ids"].shape[1]:]
@@ -322,10 +328,36 @@ class InferenceEngine:
 
         cleaned_outputs = self._clean_text(decoded_outputs)
 
+        # CRITICAL FIX: FORCE FINAL ANSWER COMPLETION
+        final_outputs = []
+
+        for text in cleaned_outputs:
+            if "Final Answer:" not in text:
+                continuation_input = self.tokenizer(
+                    text + "\nFinal Answer:",
+                    return_tensors="pt"
+                ).to(self.model.device)
+
+                extra = self.model.generate(
+                    **continuation_input,
+                    max_new_tokens=32,
+                    do_sample=False,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+
+                fixed_text = self.tokenizer.decode(
+                    extra[0],
+                    skip_special_tokens=True
+                )
+                final_outputs.append(self._clean_text([fixed_text])[0])
+            else:
+                final_outputs.append(text)
+
         results = []
         
         for i in range(len(prompts)):
-            raw_output = cleaned_outputs[i]
+            raw_output = final_outputs[i]
             parsed_cot = self.cot_parser.parse(raw_output)
 
             results.append({
