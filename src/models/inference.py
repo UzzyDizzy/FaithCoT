@@ -1,12 +1,11 @@
-#src/models/inference.py
 """
-Inference Engine.
+Inference Engine (FULL FIXED VERSION)
 
-Generates CoT reasoning from loaded models with support for:
-- Full CoT generation
-- Partial CoT (early answering)
-- Log-probability extraction for information-theoretic metrics
-- Batch inference with AMP
+Includes:
+- Stable generation
+- Correct log-prob computation (CRITICAL FIX)
+- Proper device handling
+- Debug logs for SIG/CNS failures
 """
 
 import torch
@@ -23,7 +22,6 @@ logger = get_logger("inference")
 
 
 class InferenceEngine:
-    """Engine for generating and analyzing CoT reasoning."""
 
     def __init__(
         self,
@@ -33,54 +31,44 @@ class InferenceEngine:
         device: str = "cuda",
         use_amp: bool = True,
     ):
-        """Initialize the inference engine.
-
-        Args:
-            model: Loaded HuggingFace model
-            tokenizer: Corresponding tokenizer
-            generation_config: Generation parameters
-            device: Device string ("cuda" or "cpu")
-            use_amp: Whether to use Automatic Mixed Precision
-        """
         self.model = model
         self.tokenizer = tokenizer
         self.generation_config = generation_config
-        self.device = device
+
+        # 🔥 FIX: ALWAYS TRUST MODEL DEVICE
+        self.device = model.device
+
         self.use_amp = use_amp and torch.cuda.is_available()
+
         self.cot_parser = CoTParser()
         self.answer_extractor = AnswerExtractor()
 
+    # =========================================================
+    # CLEAN TEXT
+    # =========================================================
     def _clean_text(self, texts):
-        """Universal tokenizer cleanup (model-agnostic)."""
         cleaned = []
         for text in texts:
-            text = text.replace("Ġ", " ")      # GPT2 / LLaMA BPE
-            text = text.replace("▁", " ")      # SentencePiece (Qwen, T5, etc.)
-            text = text.replace("\u00a0", " ") # non-breaking spaces
-            text = " ".join(text.split())      # normalize whitespace
+            text = text.replace("Ġ", " ")
+            text = text.replace("▁", " ")
+            text = text.replace("\u00a0", " ")
+            text = " ".join(text.split())
             cleaned.append(text.strip())
         return cleaned
 
+    # =========================================================
+    # GENERATE SINGLE
+    # =========================================================
     @torch.no_grad()
-    def generate_cot(
-        self,
-        prompt: str,
-        max_new_tokens: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Generate CoT reasoning for a single prompt.
+    def generate_cot(self, prompt: str, max_new_tokens=None):
 
-        Args:
-            prompt: Input prompt
-            max_new_tokens: Override max tokens
+        print("\n====== GENERATION DEBUG ======")
+        print("PROMPT:", prompt[:120])
 
-        Returns:
-            Dict with raw_output, parsed_cot, generated_tokens, etc.
-        """
         config = dict(self.generation_config)
         if max_new_tokens:
             config["max_new_tokens"] = max_new_tokens
 
-        # Tokenize
         inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
@@ -88,18 +76,9 @@ class InferenceEngine:
             max_length=1024,
         ).to(self.model.device)
 
-        input_length = inputs["input_ids"].shape[1]
+        input_len = inputs["input_ids"].shape[1]
 
-        # Generate with AMP
-        if self.use_amp:
-            with torch.cuda.amp.autocast(dtype=torch.float16):
-                outputs = self.model.generate(
-                    **inputs,
-                    **config,
-                    output_scores=True,
-                    return_dict_in_generate=True,
-                )
-        else:
+        with torch.cuda.amp.autocast(enabled=self.use_amp):
             outputs = self.model.generate(
                 **inputs,
                 **config,
@@ -107,127 +86,123 @@ class InferenceEngine:
                 return_dict_in_generate=True,
             )
 
-        # Decode
-        generated_ids = outputs.sequences[:, input_length:]
+        gen_ids = outputs.sequences[:, input_len:]
 
         decoded = self.tokenizer.batch_decode(
-            generated_ids,
+            gen_ids,
             skip_special_tokens=True,
-            clean_up_tokenization_spaces=True
         )
 
         raw_output = self._clean_text(decoded)[0]
 
-        # Parse CoT
-        parsed_cot = self.cot_parser.parse(raw_output)
+        print("OUTPUT:", raw_output[:200])
 
-        # Extract log-probabilities for SIG computation
-        log_probs = self._extract_log_probs(outputs.scores)
+        parsed = self.cot_parser.parse(raw_output)
 
         return {
             "raw_output": raw_output,
-            "parsed_cot": parsed_cot,
-            "num_generated_tokens": len(generated_ids),
-            "num_steps": parsed_cot.num_steps,
-            "log_probs": log_probs,
-            "input_length": input_length,
+            "parsed_cot": parsed,
+            "num_generated_tokens": gen_ids.shape[1],
+            "num_steps": parsed.num_steps,
+            "log_probs": self._extract_log_probs(outputs.scores),
+            "input_length": input_len,
         }
 
+    # =========================================================
+    # GENERATE BATCH
+    # =========================================================
     @torch.no_grad()
-    def generate_batch(
-        self,
-        prompts: List[str],
-        max_new_tokens: Optional[int] = None,
-        batch_size: int = 4,
-    ) -> List[Dict[str, Any]]:
-        """Generate CoT reasoning for a batch of prompts.
+    def generate_batch(self, prompts, max_new_tokens=None, batch_size=4):
 
-        Args:
-            prompts: List of input prompts
-            max_new_tokens: Override max tokens
-            batch_size: Batch size for inference
-
-        Returns:
-            List of result dicts (same format as generate_cot)
-        """
         results = []
+
         for i in range(0, len(prompts), batch_size):
-            batch_prompts = prompts[i : i + batch_size]
-            batch_results = self._generate_batch_internal(
-                batch_prompts, max_new_tokens
-            )
-            results.extend(batch_results)
-            if (i + batch_size) % (batch_size * 5) == 0:
-                logger.info(
-                    f"Generated {min(i + batch_size, len(prompts))}/{len(prompts)}"
-                )
+            batch = prompts[i:i+batch_size]
+
+            batch_res = self._generate_batch_internal(batch, max_new_tokens)
+            results.extend(batch_res)
+
+            logger.info(f"Generated {min(i+batch_size, len(prompts))}/{len(prompts)}")
+
         return results
 
+    # =========================================================
+    # 🔥 FIXED LOGPROB (ROOT FIX)
+    # =========================================================
     @torch.no_grad()
-    def get_answer_log_probs(
-        self,
-        prompt_with_cot: str,
-        answer_tokens: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Get log-probabilities for answer tokens given prompt + CoT.
+    def get_answer_log_prob(self, context: str, answer: str):
 
-        Used for Step Information Gain (SIG) computation.
+        print("\n====== LOGPROB DEBUG ======")
 
-        Args:
-            prompt_with_cot: Full prompt including CoT prefix
-            answer_tokens: Optional specific answer tokens to evaluate
+        if not context or len(context.strip()) < 5:
+            print("[LP DEBUG] ❌ Empty context")
+            return None
 
-        Returns:
-            Dict with log_probs, entropy, token_probs
-        """
-        inputs = self.tokenizer(
-            prompt_with_cot,
-            return_tensors="pt",
-            truncation=True,
-            max_length=1024,
-        ).to(self.model.device)
+        if answer is None or str(answer).strip() == "":
+            print("[LP DEBUG] ❌ Empty answer")
+            return None
 
-        if self.use_amp:
-            with torch.cuda.amp.autocast(dtype=torch.float16):
-                outputs = self.model(
-                    **inputs,
-                    output_hidden_states=False,
-                )
-        else:
-            outputs = self.model(**inputs, output_hidden_states=False)
+        answer = str(answer).strip()
 
-        # Get logits for the last token (next token prediction)
-        last_logits = outputs.logits[0, -1, :]  # [vocab_size]
-        log_probs = torch.log_softmax(last_logits.float(), dim=-1)
-        probs = torch.softmax(last_logits.float(), dim=-1)
+        # 🔥 CRITICAL FIX: newline separator
+        full_text = context.strip() + "\n" + answer
 
-        # Compute entropy H(A | context)
-        entropy = -(probs * log_probs).sum().item()
-        # Clamp to avoid numerical issues
-        entropy = max(0.0, entropy)
+        try:
+            enc_full = self.tokenizer(
+                full_text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=1024,
+            ).to(self.model.device)
 
-        return {
-            "log_probs": log_probs.cpu().numpy(),
-            "entropy": entropy,
-            "top_tokens": self._get_top_tokens(log_probs, k=10),
-        }
+            enc_ctx = self.tokenizer(
+                context.strip(),
+                return_tensors="pt",
+                truncation=True,
+                max_length=1024,
+            ).to(self.model.device)
 
+            input_ids = enc_full.input_ids
+            attention_mask = enc_full.attention_mask
+
+            context_len = enc_ctx.input_ids.shape[1]
+
+            print(f"[LP DEBUG] context_len={context_len}, total_len={input_ids.shape[1]}")
+
+            if context_len >= input_ids.shape[1]:
+                print("[LP DEBUG] ❌ Answer truncated")
+                return None
+
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+
+            logits = outputs.logits
+            log_probs = torch.log_softmax(logits.float(), dim=-1)
+
+            total_log_prob = 0.0
+
+            for i in range(context_len, input_ids.shape[1]):
+                token_id = input_ids[0, i]
+                total_log_prob += log_probs[0, i - 1, token_id].item()
+
+            print(f"[LP DEBUG] ✅ log_prob={total_log_prob:.4f}")
+
+            return float(total_log_prob)
+
+        except Exception as e:
+            print(f"[LP DEBUG] ❌ Exception: {e}")
+            return None
+
+    # =========================================================
+    # SEQUENCE LOGPROB
+    # =========================================================
     @torch.no_grad()
-    def get_sequence_log_prob(
-        self,
-        prompt: str,
-        continuation: str,
-    ) -> float:
-        """Get the total log-probability of a continuation given a prompt.
+    def get_sequence_log_prob(self, prompt: str, continuation: str):
 
-        Args:
-            prompt: Context/prompt text
-            continuation: Text to compute log-prob for
-
-        Returns:
-            Total log-probability (sum of per-token log-probs)
-        """
         full_text = prompt + continuation
+
         inputs = self.tokenizer(
             full_text,
             return_tensors="pt",
@@ -241,57 +216,41 @@ class InferenceEngine:
             truncation=True,
             max_length=1024,
         )
+
         prompt_len = prompt_inputs["input_ids"].shape[1]
 
-        if self.use_amp:
-            with torch.cuda.amp.autocast(dtype=torch.float16):
-                outputs = self.model(**inputs)
-        else:
+        with torch.cuda.amp.autocast(enabled=self.use_amp):
             outputs = self.model(**inputs)
 
-        # Get log-probs for continuation tokens
-        logits = outputs.logits[0]  # [seq_len, vocab_size]
+        logits = outputs.logits[0]
         log_probs = torch.log_softmax(logits.float(), dim=-1)
 
-        # Sum log-probs of continuation tokens
-        total_log_prob = 0.0
+        total = 0.0
         input_ids = inputs["input_ids"][0]
+
         for i in range(prompt_len, len(input_ids)):
             token_id = input_ids[i].item()
-            total_log_prob += log_probs[i - 1, token_id].item()
+            total += log_probs[i - 1, token_id].item()
 
-        return total_log_prob
+        return total
 
-    def extract_answer(
-        self,
-        raw_output: str,
-        answer_type: str,
-        benchmark_key: str = "",
-    ) -> Optional[str]:
-        """Extract the final answer from raw model output.
-
-        Args:
-            raw_output: Raw model output text
-            answer_type: Type of answer expected
-            benchmark_key: Benchmark identifier
-
-        Returns:
-            Extracted answer string or None
-        """
+    # =========================================================
+    # ANSWER EXTRACTION
+    # =========================================================
+    def extract_answer(self, raw_output, answer_type, benchmark_key=""):
         return self.answer_extractor.extract(raw_output, answer_type, benchmark_key)
 
-    def _generate_batch_internal(
-        self,
-        prompts: List[str],
-        max_new_tokens: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """Internal batch generation with left-padding."""
+    # =========================================================
+    # INTERNAL BATCH
+    # =========================================================
+    def _generate_batch_internal(self, prompts, max_new_tokens=None):
+
         config = dict(self.generation_config)
         if max_new_tokens:
             config["max_new_tokens"] = max_new_tokens
 
-        # Left-pad for batch generation
         self.tokenizer.padding_side = "left"
+
         inputs = self.tokenizer(
             prompts,
             return_tensors="pt",
@@ -300,118 +259,65 @@ class InferenceEngine:
             max_length=1024,
         ).to(self.model.device)
 
-        input_lengths = [
-            (inputs["attention_mask"][i] == 1).sum().item()
-            for i in range(len(prompts))
-        ]
+        with torch.cuda.amp.autocast(enabled=self.use_amp):
+            outputs = self.model.generate(**inputs, **config)
 
-        if self.use_amp:
-            with torch.cuda.amp.autocast(dtype=torch.float16):
-                outputs = self.model.generate(
-                    **inputs,
-                    **config,
-                )
-        else:
-            outputs = self.model.generate(
-                **inputs,
-                **config,
-            )
+        gen_ids = outputs[:, inputs["input_ids"].shape[1]:]
 
-        # Decode each sequence
-        generated_ids = outputs[:, inputs["input_ids"].shape[1]:]
-
-        decoded_outputs = self.tokenizer.batch_decode(
-            generated_ids,
+        decoded = self.tokenizer.batch_decode(
+            gen_ids,
             skip_special_tokens=True,
-            clean_up_tokenization_spaces=True
         )
 
-        cleaned_outputs = self._clean_text(decoded_outputs)
-
-        # CRITICAL FIX: FORCE FINAL ANSWER COMPLETION
-        final_outputs = []
-
-        for text in cleaned_outputs:
-            if "Final Answer:" not in text:
-                continuation_input = self.tokenizer(
-                    text + "\nFinal Answer:",
-                    return_tensors="pt"
-                ).to(self.model.device)
-
-                extra = self.model.generate(
-                    **continuation_input,
-                    max_new_tokens=32,
-                    do_sample=False,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                )
-
-                fixed_text = self.tokenizer.decode(
-                    extra[0],
-                    skip_special_tokens=True
-                )
-                final_outputs.append(self._clean_text([fixed_text])[0])
-            else:
-                final_outputs.append(text)
+        cleaned = self._clean_text(decoded)
 
         results = []
-        
-        for i in range(len(prompts)):
-            raw_output = final_outputs[i]
-            parsed_cot = self.cot_parser.parse(raw_output)
+
+        for i, text in enumerate(cleaned):
+
+            if i < 2:
+                print("\n====== BATCH DEBUG ======")
+                print("RAW:", text[:200])
+
+            parsed = self.cot_parser.parse(text)
 
             results.append({
-                "raw_output": raw_output,
-                "parsed_cot": parsed_cot,
-                "num_generated_tokens": len(generated_ids[i]),
-                "num_steps": parsed_cot.num_steps,
+                "raw_output": text,
+                "parsed_cot": parsed,
+                "num_generated_tokens": gen_ids[i].shape[0],
+                "num_steps": parsed.num_steps,
                 "log_probs": None,
-                "input_length": input_lengths[i],
+                "input_length": None,
             })
 
-        # Reset padding side
         self.tokenizer.padding_side = "right"
+
         return results
 
-    def _extract_log_probs(
-        self, scores: Tuple[torch.Tensor, ...]
-    ) -> Optional[np.ndarray]:
-        """Extract per-token log-probabilities from generation scores.
+    # =========================================================
+    # LOGPROBS FROM GENERATION
+    # =========================================================
+    def _extract_log_probs(self, scores):
 
-        Args:
-            scores: Tuple of score tensors from generation
-
-        Returns:
-            Numpy array of shape [num_tokens] with log-probs, or None
-        """
-        if scores is None or len(scores) == 0:
+        if scores is None:
             return None
 
-        log_probs = []
-        for score in scores:
-            # score shape: [batch_size, vocab_size]
-            lp = torch.log_softmax(score[0].float(), dim=-1)
-            # Get the max log-prob (chosen token)
-            max_lp = lp.max().item()
-            log_probs.append(max_lp)
+        vals = []
 
-        return np.array(log_probs, dtype=np.float32)
+        for s in scores:
+            lp = torch.log_softmax(s[0].float(), dim=-1)
+            vals.append(lp.max().item())
 
-    def _get_top_tokens(
-        self, log_probs: torch.Tensor, k: int = 10
-    ) -> List[Tuple[str, float]]:
-        """Get top-k tokens with their log-probabilities.
+        return np.array(vals, dtype=np.float32)
 
-        Args:
-            log_probs: Log-probability tensor [vocab_size]
-            k: Number of top tokens
+    # =========================================================
+    # TOP TOKENS
+    # =========================================================
+    def _get_top_tokens(self, log_probs, k=10):
 
-        Returns:
-            List of (token_text, log_prob) tuples
-        """
-        top_values, top_indices = torch.topk(log_probs, k)
-        result = []
-        for val, idx in zip(top_values.tolist(), top_indices.tolist()):
-            token_text = self.tokenizer.decode([idx])
-            result.append((token_text, val))
-        return result
+        top_vals, top_idx = torch.topk(log_probs, k)
+
+        return [
+            (self.tokenizer.decode([i]), v)
+            for i, v in zip(top_idx.tolist(), top_vals.tolist())
+        ]

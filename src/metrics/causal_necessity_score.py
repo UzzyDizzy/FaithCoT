@@ -39,95 +39,66 @@ class CausalNecessityScore:
         self,
         inference_engine,
         prompt: str,
-        parsed_cot: ParsedCoT,
+        parsed_cot,
         original_answer: str,
         answer_type: str,
         benchmark_key: str = "",
-    ) -> Dict[str, Any]:
-        """Compute CNS for each step by removing it and re-generating.
+    ):
 
-        For each step s_i:
-        1. Create CoT with s_i removed
-        2. Feed prompt + modified_cot to model and extract answer
-        3. CNS(s_i) = 1 if answer changed, 0 otherwise
-
-        Args:
-            inference_engine: InferenceEngine instance
-            prompt: Original prompt (without CoT)
-            parsed_cot: Parsed CoT with steps
-            original_answer: The model's original answer
-            answer_type: Answer type for comparison
-            benchmark_key: Benchmark identifier
-
-        Returns:
-            Dict with per-step CNS values and aggregate statistics
-        """
-        if not parsed_cot.steps:
+        if not parsed_cot.steps or not original_answer:
             return self._empty_result()
 
         steps = parsed_cot.steps
+
+        print("\n====== CNS DEBUG START ======")
+        print("Steps:", len(steps))
+        print("Answer:", original_answer)
+
+        # 🔥 FULL CONTEXT LOGPROB
+        full_context = prompt + "\n" + "\n".join(s.text for s in steps)
+
+        lp_full = inference_engine.get_answer_log_prob(full_context, original_answer)
+
+        if lp_full is None:
+            print("[CNS DEBUG] ❌ lp_full failed")
+            return self._empty_result()
+
+        print(f"[CNS DEBUG] lp_full={lp_full:.4f}")
+
         cns_values = []
-        answer_changes = []
 
         for i in range(len(steps)):
-            # Create CoT with step i removed
-            modified_cot = self.cot_parser.remove_step(parsed_cot, i)
 
-            # Create modified prompt with the remaining reasoning
-            modified_prompt = (
-                prompt +
-                "\n\n" +
-                modified_cot +
-                "\n\nAnswer:"
+            reduced_steps = [s.text for j, s in enumerate(steps) if j != i]
+            reduced_context = prompt + "\n" + "\n".join(reduced_steps)
+
+            lp_reduced = inference_engine.get_answer_log_prob(
+                reduced_context,
+                original_answer
             )
 
-            # Generate answer with modified CoT
-            try:
-                result = inference_engine.generate_cot(
-                    modified_prompt, max_new_tokens=256
-                )
-                modified_answer = self.answer_extractor.extract(
-                    result["raw_output"], answer_type, benchmark_key
-                )
-
-                # Compare answers
-                answer_changed = not self.answer_extractor.check_answer(
-                    modified_answer, original_answer, answer_type
-                )
-                cns = 1.0 if answer_changed else 0.0
-
-                cns_values.append(cns)
-                answer_changes.append({
-                    "step_index": i,
-                    "step_text": steps[i].text[:100],
-                    "original_answer": original_answer,
-                    "modified_answer": modified_answer,
-                    "answer_changed": answer_changed,
-                })
-
-            except Exception as e:
-                logger.warning(f"CNS computation failed for step {i}: {e}")
+            if lp_reduced is None:
+                print(f"[CNS DEBUG] ❌ step {i} failed")
                 cns_values.append(0.0)
-                answer_changes.append({
-                    "step_index": i,
-                    "error": str(e),
-                    "answer_changed": False,
-                })
+                continue
 
-        cns_array = np.array(cns_values, dtype=np.float64)
-        causal_mask = cns_array > self.threshold
+            delta = abs(lp_full - lp_reduced)
+
+            cns = 1.0 if delta > self.threshold else 0.0
+
+            print(f"[CNS DEBUG] step={i}, delta={delta:.4f}, cns={cns}")
+
+            cns_values.append(cns)
+
+        arr = np.array(cns_values, dtype=np.float64)
 
         return {
             "cns_values": cns_values,
-            "mean_cns": float(cns_array.mean()) if len(cns_array) > 0 else 0.0,
-            "max_cns": float(cns_array.max()) if len(cns_array) > 0 else 0.0,
-            "num_causal_steps": int(causal_mask.sum()),
-            "num_non_causal_steps": int((~causal_mask).sum()),
-            "causal_ratio": (
-                float(causal_mask.sum()) / len(cns_array)
-                if len(cns_array) > 0 else 0.0
-            ),
-            "answer_changes": answer_changes,
+            "mean_cns": float(arr.mean()),
+            "max_cns": float(arr.max()),
+            "num_causal_steps": int((arr > 0).sum()),
+            "num_non_causal_steps": int((arr == 0).sum()),
+            "causal_ratio": float((arr > 0).sum() / len(arr)),
             "num_steps": len(steps),
         }
 

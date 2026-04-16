@@ -30,6 +30,8 @@ logger = setup_logger("exp_faithfulness")
 from src.utils.cache import get_cache, save_cache
 from src.utils.cot_parser import CoTParser
 
+cot_parser = CoTParser()
+
 
 def run_faithfulness_profiling():
     """Run faithfulness profiling for all models × benchmarks."""
@@ -63,7 +65,7 @@ def run_faithfulness_profiling():
                 device=EXPERIMENT_CONFIG["device"],
                 use_amp=EXPERIMENT_CONFIG["use_amp"],
             )
-            cot_parser = CoTParser()
+            
         except Exception as e:
             logger.error(f"Failed to load {config.short_name}: {e}")
             continue
@@ -111,16 +113,47 @@ def run_faithfulness_profiling():
             # Re-generate with parsed CoTs
             examples_with_cot = []
 
-            #for d, p in zip(data, predictions):
-            for p in predictions:
+            for i, p in enumerate(predictions):
+
                 raw_output = p.get("raw_output", "")
                 parsed_cot = cot_parser.parse(raw_output)
 
-                examples_with_cot.append({
+                prompt = p.get("prompt", "")
+                question = p.get("question", "")
+                pred = p.get("predicted_answer")
+                gold = p.get("gold_answer")
+                answer_type = p.get("answer_type", "numeric")
+
+                # 🔥 HARD FIXES
+                if not prompt or len(prompt.strip()) < 10:
+                    prompt = f"Question: {question}\n\nSolution:"
+                    print(f"[DEBUG] Reconstructed prompt at {i}")
+
+                if pred is None or str(pred).strip() == "":
+                    print(f"[DEBUG] ❌ Missing predicted_answer at {i}")
+
+                if gold is None or str(gold).strip() == "":
+                    print(f"[DEBUG] ⚠️ Missing gold_answer at {i}")
+
+                example = {
+                    "prompt": prompt,
+                    "question": question,
                     "parsed_cot": parsed_cot,
-                    "predicted_answer": p.get("predicted_answer", ""),
+                    "predicted_answer": pred,
+                    "gold_answer": gold,
+                    "answer_type": answer_type,
                     "is_correct": p.get("is_correct", False),
-                })
+                }
+
+                examples_with_cot.append(example)
+
+                # 🔥 DEBUG FIRST 3
+                if i < 3:
+                    print("\n========= PIPELINE DEBUG =========")
+                    print("PROMPT:", prompt[:100])
+                    print("PRED:", pred)
+                    print("GOLD:", gold)
+                    print("TYPE:", answer_type)
 
             # Compute SIG
             logger.info("    Computing SIG...")

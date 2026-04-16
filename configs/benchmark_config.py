@@ -125,171 +125,239 @@ BENCHMARK_REGISTRY: Dict[str, BenchmarkConfig] = {
 # PROMPT TEMPLATES (Per benchmark, per format)
 # ============================================================
 
+
+BASE_PROMPT = """
+You must solve the problem using structured reasoning.
+
+QUESTION:
+{question}
+
+STRICT FORMAT:
+
+<STEP> one reasoning step ONLY </STEP>
+<STEP> one reasoning step ONLY </STEP>
+(at least 5 steps)
+
+Final Answer: <FINAL> answer </FINAL>
+
+RULES:
+- Minimum 5 steps
+- EXACTLY ONE Final Answer
+- Final Answer MUST be inside <FINAL> ... </FINAL>
+- Do NOT write anything outside this format
+"""
+
 PROMPT_TEMPLATES = {
     "zero_shot_cot": {
-        "gsm8k": (
-            "Solve the following math problem step by step.\n\n"
-            "You MUST follow this format EXACTLY:\n"
-            "Step 1: ...\n"
-            "Step 2: ...\n"
-            "...\n"
-            "Final Answer: <number>\n\n"
-            "DO NOT stop before giving Final Answer.\n"
-            "VERY IMPORTANT:\n"
-            "- Final output line MUST be EXACTLY: Final Answer: <number>\n"
-            "- NO OUTPUT after Final Answer\n\n"
-            "Problem: {question}\n\n"
-            "Solution:\nStep 1:"
-        ),
-        "math": (
-            "Solve the following math problem step by step.\n\n"
-            "You MUST follow this format EXACTLY:\n"
-            "Step 1: ...\n"
-            "Step 2: ...\n"
-            "...\n"
-            "Final Answer: <number>\n\n"
-            "DO NOT stop before giving Final Answer.\n"
-            "IMPORTANT:\n"
-            "- Final output line MUST be EXACTLY a SINGLE number\n"
-            "- NO OUTPUT after Final Answer\n\n"
-            "Problem: {question}\n\n"
-            "Solution:\nStep 1:"
-        ),
-        "strategyqa": (
-            "Answer the following question.\n\n"
-            "You MUST follow this format EXACTLY:\n"
-            "Step 1: ...\n"
-            "Step 2: ...\n"
-            "...\n"
-            "Final Answer: Yes OR No\n\n"
-            "DO NOT stop before giving Final Answer.\n"
-            "IMPORTANT:\n"
-            "- Final output line MUST be EXACTLY Yes or No\n"
-            "- NO OUTPUT after Final Answer\n\n"
-            "Question: {question}\n\n"
-            "Solution:\nStep 1:"
-        ),
-        "arc_challenge": (
-            "Answer the following science question.\n\n"
-            "You MUST follow this format EXACTLY:\n"
-            "Step 1: ...\n"
-            "Step 2: ...\n"
-            "...\n"
-            "Final Answer: A/B/C/D\n\n"
-            "DO NOT stop before giving Final Answer.\n"
-            "IMPORTANT:\n"
-            "- Final Answer line MUST be ONLY one letter (A, B, C, or D)\n"
-            "- NO OUTPUT after Final Answer\n\n"
-            "Question: {question}\n"
-            "Options:\n{choices}\n\n"
-            "Solution:\nStep 1:"
-        ),
-        "folio": (
-            "Determine if the conclusion follows from the premises.\n\n"
-            "You MUST follow this format EXACTLY:\n"
-            "Step 1: ...\n"
-            "Step 2: ...\n"
-            "...\n"
-            "Final Answer: True/False/Unknown\n\n"
-            "DO NOT stop before giving Final Answer.\n"
-            "IMPORTANT:\n"
-            "- Final Answer MUST be EXACTLY one of: True, False, Unknown\n"
-            "- NO OUTPUT after Final Answer\n\n"
-            "Premises: {question}\n"
-            "Conclusion: {conclusion}\n\n"
-            "Solution:\nStep 1:"
-        ),
+
+        "gsm8k": BASE_PROMPT + """
+Task:
+Solve the math problem.
+
+Answer MUST be ONLY a NUMBER
+inside <FINAL>...</FINAL> otherwise it is WRONG.
+
+Problem:
+{question}
+""",
+
+        "math": BASE_PROMPT + """
+Task:
+Solve the competition math problem carefully.
+
+Answer MUST be ONLY a NUMBER
+inside <FINAL>...</FINAL> otherwise it is WRONG.
+
+Problem:
+{question}
+""",
+
+        "strategyqa": BASE_PROMPT + """
+Task:
+Answer the question.
+
+Answer MUST be ONLY one of:
+YES or NO
+inside <FINAL>...</FINAL> otherwise it is WRONG.
+
+Question:
+{question}
+""",
+
+        "arc_challenge": BASE_PROMPT + """
+Task:
+Answer the science question.
+
+Answer MUST be ONLY one of:
+A, B, C, D
+inside <FINAL>...</FINAL> otherwise it is WRONG.
+
+Question:
+{question}
+Options:
+{choices}
+""",
+
+        "folio": BASE_PROMPT + """
+Task:
+Determine if the conclusion follows.
+
+Answer MUST be ONLY one of:
+True, False, Unknown
+inside <FINAL>...</FINAL> otherwise it is WRONG.
+
+Premises:
+{question}
+
+Conclusion:
+{conclusion}
+""",
     },
     "few_shot_cot": {
+
         "gsm8k": (
-            "Solve math problems step by step. Here are examples:\n\n"
-            "Problem: Janet's ducks lay 16 eggs per day. She eats three for breakfast "
-            "every morning and bakes muffins for her friends every day with four. She "
-            "sells the remainder for $2 each. How much does she make per day?\n"
-            "Solution: Step 1: Janet has 16 eggs per day.\n"
-            "Step 2: She uses 3 + 4 = 7 eggs.\n"
-            "Step 3: She sells 16 - 7 = 9 eggs.\n"
-            "Step 4: She makes 9 * $2 = $18 per day.\n"
-            "Final Answer: 18\n\n"
-            "Now solve this problem:\n"
-            "Problem: {question}\n\n"
+            "Solve math problems using structured reasoning.\n\n"
+
+            "Example:\n"
+            "Problem: Janet's ducks lay 16 eggs per day...\n"
             "Solution:\n"
-        ),
-        "math": (
-            "Solve competition math problems step by step.\n\n"
-            "Problem: What is the value of $\\sqrt{{16}}$?\n"
-            "Solution: Step 1: Recall that $\\sqrt{{16}}$ means finding a number that "
-            "when multiplied by itself gives 16.\n"
-            "Step 2: $4 \\times 4 = 16$.\n"
-            "Final Answer: 4\n\n"
+            "<STEP> Janet has 16 eggs per day </STEP>\n"
+            "<STEP> She uses 3 + 4 = 7 eggs </STEP>\n"
+            "<STEP> Remaining eggs = 16 - 7 = 9 </STEP>\n"
+            "<STEP> Each egg sells for $2 </STEP>\n"
+            "<STEP> Total = 9 * 2 = 18 </STEP>\n"
+            "Final Answer: <FINAL> 18 </FINAL>\n\n"
+
             "Now solve:\n"
             "Problem: {question}\n\n"
             "Solution:\n"
         ),
+
+        "math": (
+            "Solve competition math problems using structured reasoning.\n\n"
+
+            "Example:\n"
+            "Problem: What is sqrt(16)?\n"
+            "Solution:\n"
+            "<STEP> sqrt(16) means number whose square is 16 </STEP>\n"
+            "<STEP> 4 * 4 = 16 </STEP>\n"
+            "<STEP> So sqrt(16) = 4 </STEP>\n"
+            "<STEP> Verify correctness </STEP>\n"
+            "<STEP> Finalize answer </STEP>\n"
+            "Final Answer: <FINAL> 4 </FINAL>\n\n"
+
+            "Now solve:\n"
+            "Problem: {question}\n\n"
+            "Solution:\n"
+        ),
+
         "strategyqa": (
-            "Answer yes/no questions with step-by-step reasoning.\n\n"
+            "Answer yes/no questions using structured reasoning.\n\n"
+
+            "Example:\n"
             "Question: Would a pear sink in water?\n"
-            "Reasoning: Step 1: The density of a pear is about 0.6 g/cm³.\n"
-            "Step 2: Water has a density of 1.0 g/cm³.\n"
-            "Step 3: Objects less dense than water float.\n"
-            "Final Answer: No\n\n"
+            "Solution:\n"
+            "<STEP> Pear density ≈ 0.6 g/cm³ </STEP>\n"
+            "<STEP> Water density = 1.0 g/cm³ </STEP>\n"
+            "<STEP> Objects less dense float </STEP>\n"
+            "<STEP> Pear is less dense than water </STEP>\n"
+            "<STEP> Therefore it floats </STEP>\n"
+            "Final Answer: <FINAL> No </FINAL>\n\n"
+
             "Now answer:\n"
             "Question: {question}\n\n"
-            "Reasoning:\n"
+            "Solution:\n"
         ),
+
         "arc_challenge": (
-            "Answer science questions with reasoning.\n\n"
-            "Question: Which property of a mineral can be determined just by looking at it?\n"
+            "Answer science questions using structured reasoning.\n\n"
+
+            "Example:\n"
+            "Question: Which property of a mineral can be determined just by looking?\n"
             "Options: (A) luster (B) mass (C) weight (D) hardness\n"
-            "Reasoning: Step 1: Luster is the way light reflects off a mineral's surface.\n"
-            "Step 2: You can see how shiny or dull a mineral is just by looking.\n"
-            "Step 3: Mass, weight, and hardness require tools to measure.\n"
-            "Final Answer: A\n\n"
+            "Solution:\n"
+            "<STEP> Luster is how light reflects from surface </STEP>\n"
+            "<STEP> This can be observed visually </STEP>\n"
+            "<STEP> Mass and weight need measurement </STEP>\n"
+            "<STEP> Hardness requires testing </STEP>\n"
+            "<STEP> Only luster is visible </STEP>\n"
+            "Final Answer: <FINAL> A </FINAL>\n\n"
+
             "Now answer:\n"
             "Question: {question}\n"
             "Options:\n{choices}\n\n"
-            "Reasoning:\n"
+            "Solution:\n"
         ),
+
         "folio": (
-            "Determine if a conclusion follows from premises.\n\n"
+            "Determine logical validity using structured reasoning.\n\n"
+
+            "Example:\n"
             "Premises: All cats are mammals. Tom is a cat.\n"
             "Conclusion: Tom is a mammal.\n"
-            "Reasoning: Step 1: From 'All cats are mammals', we know the set of cats "
-            "is a subset of mammals.\n"
-            "Step 2: Tom is in the set of cats.\n"
-            "Step 3: Therefore Tom must be in the set of mammals.\n"
-            "Final Answer: True\n\n"
+            "Solution:\n"
+            "<STEP> All cats are mammals </STEP>\n"
+            "<STEP> Tom is a cat </STEP>\n"
+            "<STEP> Therefore Tom is in set of cats </STEP>\n"
+            "<STEP> All cats are mammals implies Tom is mammal </STEP>\n"
+            "<STEP> Conclusion follows logically </STEP>\n"
+            "Final Answer: <FINAL> True </FINAL>\n\n"
+
             "Now determine:\n"
             "Premises: {question}\n"
             "Conclusion: {conclusion}\n\n"
-            "Reasoning:\n"
+            "Solution:\n"
         ),
     },
+
+
     "explicit_steps": {
+
         "gsm8k": (
-            "Solve the following math problem. You MUST format your solution as numbered steps:\n"
-            "Step 1: ...\nStep 2: ...\n...\nFinal Answer: [number]\n\n"
-            "Problem: {question}\n\nSolution:\n"
+            "Solve using STRICT structured reasoning.\n\n"
+            "You MUST use this format:\n"
+            "<STEP> ... </STEP>\n(at least 5 steps)\n"
+            "Final Answer: <FINAL> number </FINAL>\n\n"
+            "Problem: {question}\n\n"
+            "Solution:\n"
         ),
+
         "math": (
-            "Solve the following math problem. You MUST format your solution as numbered steps:\n"
-            "Step 1: ...\nStep 2: ...\n...\nFinal Answer: [answer]\n\n"
-            "Problem: {question}\n\nSolution:\n"
+            "Solve using STRICT structured reasoning.\n\n"
+            "Format:\n"
+            "<STEP> ... </STEP>\n(at least 5 steps)\n"
+            "Final Answer: <FINAL> answer </FINAL>\n\n"
+            "Problem: {question}\n\n"
+            "Solution:\n"
         ),
+
         "strategyqa": (
-            "Answer with Yes or No. You MUST format your reasoning as numbered steps:\n"
-            "Step 1: ...\nStep 2: ...\n...\nFinal Answer: [Yes/No]\n\n"
-            "Question: {question}\n\nReasoning:\n"
+            "Answer using STRICT structured reasoning.\n\n"
+            "Format:\n"
+            "<STEP> ... </STEP>\n"
+            "Final Answer: <FINAL> Yes/No </FINAL>\n\n"
+            "Question: {question}\n\n"
+            "Solution:\n"
         ),
+
         "arc_challenge": (
-            "Select the correct answer. You MUST format your reasoning as numbered steps:\n"
-            "Step 1: ...\nStep 2: ...\n...\nFinal Answer: [A/B/C/D]\n\n"
-            "Question: {question}\nOptions:\n{choices}\n\nReasoning:\n"
+            "Answer using STRICT structured reasoning.\n\n"
+            "Format:\n"
+            "<STEP> ... </STEP>\n"
+            "Final Answer: <FINAL> A/B/C/D </FINAL>\n\n"
+            "Question: {question}\n"
+            "Options:\n{choices}\n\n"
+            "Solution:\n"
         ),
+
         "folio": (
-            "Determine True/False/Unknown. You MUST format reasoning as numbered steps:\n"
-            "Step 1: ...\nStep 2: ...\n...\nFinal Answer: [True/False/Unknown]\n\n"
-            "Premises: {question}\nConclusion: {conclusion}\n\nReasoning:\n"
+            "Answer using STRICT structured reasoning.\n\n"
+            "Format:\n"
+            "<STEP> ... </STEP>\n"
+            "Final Answer: <FINAL> True/False/Unknown </FINAL>\n\n"
+            "Premises: {question}\n"
+            "Conclusion: {conclusion}\n\n"
+            "Solution:\n"
         ),
     },
 }

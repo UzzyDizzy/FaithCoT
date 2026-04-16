@@ -35,117 +35,141 @@ class StepInformationGain:
         """
         self.threshold = threshold
 
+    def _safe_context(self, prompt, steps, max_chars=2000):
+        text = prompt + "\n" + "\n".join(s.text for s in steps)
+        return text[-max_chars:]
+
+    def _safe_entropy(self, inference_engine, context):
+        if not context or len(context.strip()) < 10:
+            return None
+
+        try:
+            result = inference_engine.get_answer_log_probs(context)
+            if result is None or "entropy" not in result:
+                return None
+            return result["entropy"]
+        except Exception:
+            return None
+
     def compute(
         self,
         inference_engine,
         prompt: str,
-        parsed_cot: ParsedCoT,
-    ) -> Dict[str, Any]:
-        """Compute SIG for each step in a CoT.
+        parsed_cot,
+        original_answer: str,
+        answer_type: str,
+        benchmark_key: str = "",
+    ):
 
-        For each step s_i, we compute:
-        1. H(A | prompt + s_1 + ... + s_{i-1}) — entropy BEFORE this step
-        2. H(A | prompt + s_1 + ... + s_i) — entropy AFTER this step
-        3. SIG(s_i) = H_before - H_after
-
-        Args:
-            inference_engine: InferenceEngine instance with loaded model
-            prompt: Original prompt
-            parsed_cot: Parsed CoT with individual steps
-
-        Returns:
-            Dict with per-step SIG values and aggregate statistics
-        """
-        if not parsed_cot.steps:
+        if not parsed_cot or not parsed_cot.steps:
+            print("[SIG DEBUG] ❌ No parsed steps")
             return self._empty_result()
 
-        steps = parsed_cot.steps
-
-        if not steps or len(steps) == 0:
+        if not original_answer:
+            print("[SIG DEBUG] ❌ Empty original answer")
             return self._empty_result()
 
-        entropies = []
+        steps = [
+            s for s in parsed_cot.steps
+            if s.text and len(s.text.strip()) > 5
+        ]
+
+        if not steps:
+            print("[SIG DEBUG] ❌ Steps filtered out")
+            return self._empty_result()
+
+        print(f"[SIG DEBUG] Steps count: {len(steps)}")
+        print(f"[SIG DEBUG] Answer: {repr(original_answer)}")
+
         sig_values = []
 
-        # Compute entropy with just the prompt (no reasoning)
-        context = prompt
-        result = inference_engine.get_answer_log_probs(context)
-        if result is None or "entropy" not in result:
+        # ---- BASELINE ----
+        lp_prev = inference_engine.get_answer_log_prob(prompt, original_answer)
+
+        if lp_prev is None:
+            print("[SIG DEBUG] ❌ lp_prev is None (BASELINE FAILED)")
             return self._empty_result()
 
-        h_initial = result["entropy"]
-        entropies.append(h_initial)
+        print(f"[SIG DEBUG] lp_prev={lp_prev:.4f}")
 
-        # Compute entropy after each step
-        for i, step in enumerate(steps):
-            context = prompt + "\n" + "\n".join(s.text for s in steps[: i + 1])
-            result = inference_engine.get_answer_log_probs(context)
-            if result is None or "entropy" not in result:
-                return self._empty_result()
+        # ---- LOOP ----
+        for i in range(len(steps)):
 
-            h_after = result["entropy"]
-            entropies.append(h_after)
+            context_now = prompt + "\n" + "\n".join(
+                s.text for s in steps[: i + 1]
+            )
 
-            # SIG = entropy reduction from adding this step
-            sig = max(0.0, entropies[i] - h_after)
+            lp_now = inference_engine.get_answer_log_prob(
+                context_now,
+                original_answer
+            )
+
+            if lp_now is None:
+                print(f"[SIG DEBUG] ❌ lp_now None at step {i}")
+                sig_values.append(0.0)
+                continue
+
+            sig = max(0.0, lp_now - lp_prev)
+
+            print(f"[SIG DEBUG] step={i}, lp_now={lp_now:.4f}, sig={sig:.4f}")
+
             sig_values.append(sig)
+            lp_prev = lp_now
+
+        if not sig_values:
+            print("[SIG DEBUG] ❌ sig_values empty after loop")
+            return self._empty_result()
 
         sig_array = np.array(sig_values, dtype=np.float64)
-
-        # Classify steps as informative or noise
         informative_mask = sig_array > self.threshold
-        num_informative = int(informative_mask.sum())
-        num_noise = len(sig_array) - num_informative
+
+        print(f"[SIG DEBUG] ✅ FINAL SIG: {sig_values}")
 
         return {
             "sig_values": sig_values,
-            "entropies": entropies,
-            "mean_sig": float(sig_array.mean()) if len(sig_array) > 0 else 0.0,
-            "max_sig": float(sig_array.max()) if len(sig_array) > 0 else 0.0,
+            "mean_sig": float(sig_array.mean()),
+            "max_sig": float(sig_array.max()),
             "total_information_gain": float(sig_array.sum()),
-            "num_steps": len(steps),
-            "num_informative_steps": num_informative,
-            "num_noise_steps": num_noise,
-            "informative_ratio": (
-                num_informative / len(sig_array) if len(sig_array) > 0 else 0.0
-            ),
+            "num_steps": len(sig_values),
+            "num_informative_steps": int(informative_mask.sum()),
+            "num_noise_steps": int(len(sig_array) - informative_mask.sum()),
+            "informative_ratio": float(informative_mask.sum() / len(sig_array)),
             "step_labels": [
-                "informative" if m else "noise" for m in informative_mask
+                "informative" if m else "noise"
+                for m in informative_mask
             ],
         }
 
-    def compute_batch(
-        self,
-        inference_engine,
-        examples: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Compute SIG for a batch of examples.
+    def compute_batch(self, inference_engine, examples):
 
-        Args:
-            inference_engine: InferenceEngine instance
-            examples: List of dicts with 'prompt' and 'parsed_cot'
-
-        Returns:
-            List of SIG result dicts
-        """
         results = []
+
         for i, ex in enumerate(examples):
+
             prompt = ex.get("prompt", "")
             parsed_cot = ex.get("parsed_cot")
+            original_answer = ex.get("predicted_answer", "")
+            answer_type = ex.get("answer_type", "numeric")
 
-            if parsed_cot is None:
-                results.append(self._empty_result())
-                continue
+            print(f"\n========== SIG DEBUG EXAMPLE {i} ==========")
 
             try:
-                result = self.compute(inference_engine, prompt, parsed_cot)
-                results.append(result)
-            except Exception as e:
-                logger.warning(f"SIG computation failed for example {i}: {e}")
-                results.append(self._empty_result())
+                result = self.compute(
+                    inference_engine,
+                    prompt,
+                    parsed_cot,
+                    original_answer,
+                    answer_type,
+                )
 
-            if (i + 1) % 20 == 0:
-                logger.info(f"SIG: Computed {i + 1}/{len(examples)}")
+                if not result["sig_values"]:
+                    print("[SIG DEBUG] ❌ EMPTY SIG RETURNED")
+
+                results.append(result)
+
+            except Exception as e:
+                print(f"[SIG DEBUG] ❌ Exception: {e}")
+                results.append(self._empty_result())
 
         return results
 

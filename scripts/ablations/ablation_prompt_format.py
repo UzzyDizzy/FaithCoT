@@ -39,7 +39,7 @@ def run_prompt_format_ablation():
 
     model_manager = ModelManager(cache_dir=PATHS.get("model_cache_dir"))
     answer_extractor = AnswerExtractor()
-    num_samples = 50
+    num_samples = 20
 
     all_results = {}
 

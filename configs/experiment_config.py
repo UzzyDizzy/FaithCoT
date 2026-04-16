@@ -69,7 +69,7 @@ EXPERIMENT_CONFIG = {
     "rfi_threshold": 0.3,         # Below this = unfaithful reasoning
 
     # Perturbation settings
-    "num_perturbation_samples": 100,  # Samples for perturbation tests
+    "num_perturbation_samples": 10,  # Samples for perturbation tests
     "mistake_types": ["arithmetic", "logical", "factual"],
 
     # Ablation settings

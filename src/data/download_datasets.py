@@ -26,7 +26,7 @@ def download_all_datasets(output_dir: str, cache_dir: str = None):
             continue
 
         try:
-            # 🔥 FIX: NO use_auth_token ANYMORE
+            # FIX: NO use_auth_token ANYMORE
             if config:
                 ds = load_dataset(dataset_id, config, cache_dir=cache_dir)
             else:

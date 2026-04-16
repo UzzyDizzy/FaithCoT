@@ -129,6 +129,15 @@ class CoTParser:
         Tries multiple splitting strategies and uses the one that
         produces the most granular, meaningful steps.
         """
+        # PRIORITY 0: <STEP> TAGS
+        step_tags = re.findall(r"<STEP>(.*?)</STEP>", text, re.DOTALL)
+        if step_tags:
+            return [
+                ReasoningStep(index=i, text=s.strip())
+                for i, s in enumerate(step_tags)
+                if s.strip()
+            ]
+
         if not text.strip():
             return []
 
@@ -210,6 +219,15 @@ class CoTParser:
 
     def _extract_final_answer_text(self, text: str) -> str:
         """Extract the final answer portion from the full output."""
+        # PRIORITY 0: <FINAL>
+        match = re.search(
+            r"Final Answer\s*[:\-]?\s*<FINAL>(.*?)</FINAL>",
+            text,
+            re.IGNORECASE | re.DOTALL
+        )
+        if match:
+            return match.group(1).strip()
+
         # Common patterns for final answers
         patterns = [
             r"(?:Final Answer|The answer is|Answer|ANSWER)\s*[:=]\s*(.*?)(?:\n|$)",
